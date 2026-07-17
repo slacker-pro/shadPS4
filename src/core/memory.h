@@ -321,6 +321,11 @@ private:
 
     PhysHandle CarvePhysArea(PhysMap& map, PAddr addr, u64 size);
 
+    /// Searches for a free direct-memory area of sufficient size.
+    /// Returns {iterator to found area, aligned start address} or {end(), 0} if none found.
+    std::pair<PhysHandle, PAddr> FindFreeDmemArea(PAddr search_start, u64 size,
+                                                    u64 alignment) const;
+
     VMAHandle Split(VMAHandle vma_handle, u64 offset_in_vma);
 
     PhysHandle Split(PhysMap& map, PhysHandle dmem_handle, u64 offset_in_area);

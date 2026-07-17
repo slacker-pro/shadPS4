@@ -508,32 +508,29 @@ ImageId TextureCache::FindImage(ImageDesc& desc, bool exact_fmt) {
 
     std::scoped_lock lock{mutex};
     ImageIds image_ids;
-    ForEachImageInRegion(info.guest_address, info.guest_size,
-                         [&](ImageId image_id, Image& image) { image_ids.push_back(image_id); });
-
     ImageId image_id{};
 
-    // Check for a perfect match first
-    for (const auto& cache_id : image_ids) {
-        auto& cache_image = slot_images[cache_id];
-        if (cache_image.info.guest_address != info.guest_address) {
-            continue;
+    // Collect region images and check for a perfect match in a single pass.
+    ForEachImageInRegion(info.guest_address, info.guest_size,
+                         [&](ImageId cache_id, Image& cache_image) {
+        image_ids.push_back(cache_id);
+        if (image_id) {
+            return; // Already found a perfect match.
         }
-        if (cache_image.info.guest_size != info.guest_size) {
-            continue;
-        }
-        if (cache_image.info.size != info.size) {
-            continue;
+        if (cache_image.info.guest_address != info.guest_address ||
+            cache_image.info.guest_size != info.guest_size ||
+            cache_image.info.size != info.size) {
+            return;
         }
         if (!IsVulkanFormatCompatible(cache_image.info.pixel_format, info.pixel_format) ||
             (cache_image.info.type != info.type && info.size != Extent3D{1, 1, 1})) {
-            continue;
+            return;
         }
         if (exact_fmt && info.pixel_format != cache_image.info.pixel_format) {
-            continue;
+            return;
         }
         image_id = cache_id;
-    }
+    });
 
     // Try to resolve overlaps (if any)
     int view_mip{-1};
@@ -954,23 +951,7 @@ void TextureCache::GarbageCollectImages() {
         return;
     }
     std::scoped_lock lock{mutex};
-    bool pressured = false;
-    bool aggresive = false;
-    u64 ticks_to_destroy = 0;
-    size_t num_deletions = 0;
-
-    const auto configure = [&](bool allow_aggressive) {
-        pressured = total_used_memory >= pressure_gc_memory;
-        aggresive = allow_aggressive && total_used_memory >= critical_gc_memory;
-        ticks_to_destroy = aggresive ? 160 : pressured ? 80 : 16;
-        ticks_to_destroy = std::min(ticks_to_destroy, gc_tick);
-        num_deletions = aggresive ? 40 : pressured ? 20 : 10;
-    };
     const auto clean_up = [&](ImageId image_id) {
-        if (num_deletions == 0) {
-            return true;
-        }
-        --num_deletions;
         auto& image = slot_images[image_id];
         const bool download = image.SafeToDownload();
         const bool tiled = image.info.IsTiled();
@@ -978,36 +959,17 @@ void TextureCache::GarbageCollectImages() {
             // This is a workaround for now. We can't handle non-linear image downloads.
             return false;
         }
-        if (download && !pressured) {
+        if (download && !(total_used_memory >= pressure_gc_memory)) {
             return false;
         }
         if (download) {
             DownloadImageMemory(image_id);
         }
         FreeImage(image_id);
-        if (total_used_memory < critical_gc_memory) {
-            if (aggresive) {
-                num_deletions >>= 2;
-                aggresive = false;
-                return false;
-            }
-            if (pressured && total_used_memory < pressure_gc_memory) {
-                num_deletions >>= 1;
-                pressured = false;
-            }
-        }
         return false;
     };
-
-    // Try to remove anything old enough and not high priority.
-    configure(false);
-    lru_cache.ForEachItemBelow(gc_tick - ticks_to_destroy, clean_up);
-
-    if (total_used_memory >= critical_gc_memory) {
-        // If we are still over the critical limit, run an aggressive GC
-        configure(true);
-        lru_cache.ForEachItemBelow(gc_tick - ticks_to_destroy, clean_up);
-    }
+    GarbageCollectByTicks(total_used_memory, trigger_gc_memory, pressure_gc_memory,
+                          critical_gc_memory, lru_cache, clean_up);
 }
 
 void TextureCache::GarbageCollectSamplers() {
@@ -1016,38 +978,14 @@ void TextureCache::GarbageCollectSamplers() {
         return;
     }
     std::scoped_lock lock{samplers_mutex};
-    bool pressured = false;
-    bool aggresive = false;
-    u64 ticks_to_destroy = 0;
-    size_t num_deletions = 0;
-
-    const auto configure = [&](bool allow_aggressive) {
-        pressured = total_used_samplers >= pressure_gc_samplers;
-        aggresive = allow_aggressive && total_used_samplers >= critical_gc_samplers;
-        ticks_to_destroy = aggresive ? 160 : pressured ? 80 : 16;
-        ticks_to_destroy = std::min(ticks_to_destroy, gc_tick);
-        num_deletions = aggresive ? 40 : pressured ? 20 : 10;
-    };
     const auto clean_up = [&](u64 hash) {
-        if (num_deletions == 0) {
-            return true;
-        }
-        --num_deletions;
         const size_t lru_id = samplers.at(hash).lru_id;
         samplers.erase(hash);
         sampler_lru_cache.Free(lru_id);
         return false;
     };
-
-    // Try to remove anything old enough and not high priority.
-    configure(false);
-    sampler_lru_cache.ForEachItemBelow(gc_tick - ticks_to_destroy, clean_up);
-
-    if (total_used_samplers >= critical_gc_samplers) {
-        // If we are still over the critical limit, run an aggressive GC
-        configure(true);
-        sampler_lru_cache.ForEachItemBelow(gc_tick - ticks_to_destroy, clean_up);
-    }
+    GarbageCollectByTicks(total_used_samplers, trigger_gc_samplers, pressure_gc_samplers,
+                          critical_gc_samplers, sampler_lru_cache, clean_up);
 }
 
 void TextureCache::RunGarbageCollector() {
