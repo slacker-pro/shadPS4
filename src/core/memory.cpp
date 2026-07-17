@@ -50,11 +50,12 @@ MemoryManager::MemoryManager() {
 
 MemoryManager::~MemoryManager() = default;
 
-std::pair<MemoryManager::PhysHandle, PAddr> MemoryManager::FindFreeDmemArea(
-    PAddr search_start, u64 size, u64 alignment) const {
+std::pair<MemoryManager::PhysHandle, PAddr> MemoryManager::FindFreeDmemArea(PAddr search_start,
+                                                                            u64 size,
+                                                                            u64 alignment) const {
     auto dmem_area = FindDmemArea(search_start);
-    PAddr mapping_start = Common::AlignUp(
-        std::max<PAddr>(search_start, dmem_area->second.base), alignment);
+    PAddr mapping_start =
+        Common::AlignUp(std::max<PAddr>(search_start, dmem_area->second.base), alignment);
     PAddr mapping_end = mapping_start + size;
 
     while (dmem_area->second.dma_type != PhysicalMemoryType::Free ||
