@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <limits>
+#include <boost/container/small_vector.hpp>
 
 #include "common/alignment.h"
 #include "common/assert.h"
@@ -54,6 +55,26 @@ MemoryManager::MemoryManager() {
 }
 
 MemoryManager::~MemoryManager() = default;
+
+std::pair<MemoryManager::PhysHandle, PAddr> MemoryManager::FindFreeDmemArea(
+    PAddr search_start, u64 size, u64 alignment) const {
+    auto dmem_area = FindDmemArea(search_start);
+    PAddr mapping_start = Common::AlignUp(
+        std::max<PAddr>(search_start, dmem_area->second.base), alignment);
+    PAddr mapping_end = mapping_start + size;
+
+    while (dmem_area->second.dma_type != PhysicalMemoryType::Free ||
+           dmem_area->second.GetEnd() < mapping_end) {
+        ++dmem_area;
+        if (dmem_area == dmem_map.end()) {
+            break;
+        }
+        mapping_start = Common::AlignUp(dmem_area->second.base, alignment);
+        mapping_end = mapping_start + size;
+    }
+
+    return {dmem_area, mapping_start};
+}
 
 void MemoryManager::SetupMemoryRegions(u64 flexible_size, bool use_extended_mem1,
                                        bool use_extended_mem2) {
@@ -189,7 +210,7 @@ bool MemoryManager::TryWriteBacking(void* address, const void* data, u64 size) {
     ASSERT_MSG(IsValidMapping(virtual_addr, size), "Attempted to access invalid address {:#x}",
                virtual_addr);
 
-    std::vector<VirtualMemoryArea> vmas_to_write;
+    boost::container::small_vector<VirtualMemoryArea, 4> vmas_to_write;
     auto current_vma = FindVMA(virtual_addr);
     while (current_vma->second.Overlaps(virtual_addr, size)) {
         if (!HasPhysicalBacking(current_vma->second)) {
@@ -226,28 +247,8 @@ PAddr MemoryManager::PoolExpand(PAddr search_start, PAddr search_end, u64 size, 
     std::scoped_lock lk{mutex, unmap_mutex};
     alignment = alignment > 0 ? alignment : 64_KB;
 
-    auto dmem_area = FindDmemArea(search_start);
-    auto mapping_start = search_start > dmem_area->second.base
-                             ? Common::AlignUp(search_start, alignment)
-                             : Common::AlignUp(dmem_area->second.base, alignment);
-    auto mapping_end = mapping_start + size;
-
-    // Find the first free, large enough dmem area in the range.
-    while (dmem_area->second.dma_type != PhysicalMemoryType::Free ||
-           dmem_area->second.GetEnd() < mapping_end) {
-        // The current dmem_area isn't suitable, move to the next one.
-        dmem_area++;
-        if (dmem_area == dmem_map.end()) {
-            break;
-        }
-
-        // Update local variables based on the new dmem_area
-        mapping_start = Common::AlignUp(dmem_area->second.base, alignment);
-        mapping_end = mapping_start + size;
-    }
-
+    const auto [dmem_area, mapping_start] = FindFreeDmemArea(search_start, size, alignment);
     if (dmem_area == dmem_map.end()) {
-        // There are no suitable mappings in this range
         LOG_ERROR(Kernel_Vmm, "Unable to find free direct memory area: size = {:#x}", size);
         return -1;
     }
@@ -268,27 +269,8 @@ PAddr MemoryManager::Allocate(PAddr search_start, PAddr search_end, u64 size, u6
     std::scoped_lock lk{mutex, unmap_mutex};
     alignment = alignment > 0 ? alignment : 16_KB;
 
-    auto dmem_area = FindDmemArea(search_start);
-    auto mapping_start =
-        Common::AlignUp(std::max<PAddr>(search_start, dmem_area->second.base), alignment);
-    auto mapping_end = mapping_start + size;
-
-    // Find the first free, large enough dmem area in the range.
-    while (dmem_area->second.dma_type != PhysicalMemoryType::Free ||
-           dmem_area->second.GetEnd() < mapping_end) {
-        // The current dmem_area isn't suitable, move to the next one.
-        dmem_area++;
-        if (dmem_area == dmem_map.end()) {
-            break;
-        }
-
-        // Update local variables based on the new dmem_area
-        mapping_start = Common::AlignUp(dmem_area->second.base, alignment);
-        mapping_end = mapping_start + size;
-    }
-
-    if (dmem_area == dmem_map.end() || mapping_end > search_end) {
-        // There are no suitable mappings in this range
+    const auto [dmem_area, mapping_start] = FindFreeDmemArea(search_start, size, alignment);
+    if (dmem_area == dmem_map.end() || mapping_start + size > search_end) {
         LOG_ERROR(Kernel_Vmm, "Unable to find free direct memory area: size = {:#x}", size);
         return -1;
     }

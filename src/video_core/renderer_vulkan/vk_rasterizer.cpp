@@ -458,6 +458,15 @@ bool Rasterizer::BindResources(const Pipeline* pipeline) {
 
     bool uses_dma = false;
 
+    // Pre-calculate total descriptor count for efficient single allocation.
+    size_t total_writes = 0;
+    for (const auto* stage : pipeline->GetStages()) {
+        if (stage) {
+            total_writes += stage->buffers.size() + stage->images.size() + stage->samplers.size();
+        }
+    }
+    set_writes.resize(total_writes);
+
     // Bind resource buffers and textures.
     Shader::Backend::Bindings binding{};
     push_data = MakeUserData(liverpool->regs);
@@ -465,8 +474,6 @@ bool Rasterizer::BindResources(const Pipeline* pipeline) {
         if (!stage) {
             continue;
         }
-        set_writes.resize(set_writes.size() + stage->buffers.size() + stage->images.size() +
-                          stage->samplers.size());
         stage->PushUd(binding, push_data);
         BindBuffers(*stage, binding, push_data);
         BindTextures(*stage, binding);

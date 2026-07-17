@@ -341,6 +341,61 @@ private:
         DeleteImage(image_id);
     }
 
+    void GarbageCollectImages();
+    void GarbageCollectSamplers();
+
+    /// Shared GC helper: two-phase cleanup via LRU cache.
+    template <typename LRUCache, typename CleanupFn>
+    void GarbageCollectByTicks(u64& total_used, u64 trigger, u64 pressure, u64 critical,
+                               LRUCache& lru_cache, CleanupFn&& clean_up) {
+        if (total_used < trigger) {
+            return;
+        }
+        size_t num_deletions = 0;
+        bool pressured{false};
+        bool aggresive{false};
+        u64 ticks_to_destroy{};
+
+        const auto configure = [&](bool allow_aggressive) {
+            pressured = total_used >= pressure;
+            aggresive = allow_aggressive && total_used >= critical;
+            ticks_to_destroy = aggresive ? 160 : pressured ? 80 : 16;
+            ticks_to_destroy = std::min(ticks_to_destroy, gc_tick);
+            num_deletions = aggresive ? 40 : pressured ? 20 : 10;
+        };
+
+        const auto wrapped_cleanup = [&](auto id) -> bool {
+            if (num_deletions == 0) {
+                return true;
+            }
+            --num_deletions;
+            const bool stop = clean_up(id);
+            // Degradation: reduce GC aggressiveness when memory drops below thresholds.
+            if (total_used < critical) {
+                if (aggresive) {
+                    num_deletions >>= 2;
+                    aggresive = false;
+                    return stop;
+                }
+                if (pressured && total_used < pressure) {
+                    num_deletions >>= 1;
+                    pressured = false;
+                }
+            }
+            return stop;
+        };
+
+        // Try to remove anything old enough and not high priority.
+        configure(false);
+        lru_cache.ForEachItemBelow(gc_tick - ticks_to_destroy, wrapped_cleanup);
+
+        if (total_used >= critical) {
+            // If we are still over the critical limit, run an aggressive GC
+            configure(true);
+            lru_cache.ForEachItemBelow(gc_tick - ticks_to_destroy, wrapped_cleanup);
+        }
+    }
+
 private:
     const Vulkan::Instance& instance;
     Vulkan::Scheduler& scheduler;
