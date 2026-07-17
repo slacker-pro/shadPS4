@@ -540,26 +540,26 @@ ImageId TextureCache::FindImage(ImageDesc& desc, bool exact_fmt) {
     ImageId image_id{};
 
     // Collect region images and check for a perfect match in a single pass.
-    ForEachImageInRegion(info.guest_address, info.guest_size,
-                         [&](ImageId cache_id, Image& cache_image) {
-        image_ids.push_back(cache_id);
-        if (image_id) {
-            return; // Already found a perfect match.
-        }
-        if (cache_image.info.guest_address != info.guest_address ||
-            cache_image.info.guest_size != info.guest_size ||
-            cache_image.info.size != info.size) {
-            return;
-        }
-        if (!IsVulkanFormatCompatible(cache_image.info.pixel_format, info.pixel_format) ||
-            (cache_image.info.type != info.type && info.size != Extent3D{1, 1, 1})) {
-            return;
-        }
-        if (exact_fmt && info.pixel_format != cache_image.info.pixel_format) {
-            return;
-        }
-        image_id = cache_id;
-    });
+    ForEachImageInRegion(
+        info.guest_address, info.guest_size, [&](ImageId cache_id, Image& cache_image) {
+            image_ids.push_back(cache_id);
+            if (image_id) {
+                return; // Already found a perfect match.
+            }
+            if (cache_image.info.guest_address != info.guest_address ||
+                cache_image.info.guest_size != info.guest_size ||
+                cache_image.info.size != info.size) {
+                return;
+            }
+            if (!IsVulkanFormatCompatible(cache_image.info.pixel_format, info.pixel_format) ||
+                (cache_image.info.type != info.type && info.size != Extent3D{1, 1, 1})) {
+                return;
+            }
+            if (exact_fmt && info.pixel_format != cache_image.info.pixel_format) {
+                return;
+            }
+            image_id = cache_id;
+        });
 
     // Try to resolve overlaps (if any)
     int view_mip{-1};
